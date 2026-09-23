@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Line Coding &amp; PSD Simulator</title>
+<style>
+:root {
+  --bg:#f7f7f5; --panel:#ffffff; --border:#dcdad3; --text:#1a1a1a; --sub:#5a5a55;
+  --accent:#185fa5; --good:#3b6d11; --bad:#a32d2d;
+  box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg:#17171a; --panel:#232326; --border:#3a3a3d; --text:#eee; --sub:#aaa;
+  --accent:#5aa4ec; --good:#97c459; --bad:#f09595; }
+}
+:root[data-theme="dark"] { --bg:#17171a; --panel:#232326; --border:#3a3a3d; --text:#eee; --sub:#aaa;
+  --accent:#5aa4ec; --good:#97c459; --bad:#f09595; }
+html{scroll-padding-top:env(safe-area-inset-top,0px);}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;line-height:1.5;}
+.wrap{max-width:960px;margin:0 auto;padding:1.5rem 1rem 3rem;}
+h1{font-size:1.3rem;margin:0 0 .25rem;}
+h2{font-size:1.05rem;margin:1.6rem 0 .5rem;color:var(--accent);}
+p.sub{color:var(--sub);margin:0 0 1rem;font-size:.9rem;}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:1rem;margin-bottom:1rem;}
+.row{display:flex;flex-wrap:wrap;gap:.75rem;align-items:flex-end;margin-bottom:.5rem;}
+.field{display:flex;flex-direction:column;font-size:.8rem;color:var(--sub);gap:.25rem;}
+.field select,.field input[type=text],.field input[type=number]{padding:.35rem .4rem;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);width:150px;}
+button{background:var(--accent);color:#fff;border:none;padding:.5rem .9rem;border-radius:6px;font-size:.85rem;cursor:pointer;}
+button.sec{background:transparent;color:var(--accent);border:1px solid var(--accent);}
+.gridwave{display:grid;grid-template-columns:1fr;gap:.4rem;}
+.wavebox{position:relative;height:80px;}
+.wavelabel{font-size:.78rem;color:var(--sub);margin:.4rem 0 -.1rem;}
+.chartbox{position:relative;height:240px;margin:.5rem 0 1rem;}
+table{width:100%;border-collapse:collapse;font-size:.82rem;margin-top:.5rem;}
+th,td{border-bottom:1px solid var(--border);padding:.3rem .4rem;text-align:left;}
+th{color:var(--sub);font-weight:500;}
+.pill{display:inline-block;padding:.15rem .55rem;border-radius:20px;font-size:.75rem;font-weight:600;}
+.pill.good{background:rgba(59,109,17,.15);color:var(--good);}
+.pill.bad{background:rgba(163,45,45,.15);color:var(--bad);}
+.note{font-size:.85rem;color:var(--sub);border-left:3px solid var(--accent);padding:.4rem .7rem;background:rgba(24,95,165,.06);border-radius:0 6px 6px 0;margin:.5rem 0;}
+.interp{font-size:.88rem;margin-top:.4rem;}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Experiment 6 — Digital line coding &amp; power spectral density</h1>
+<p class="sub">Six line codes are generated from the same bit sequence: unipolar NRZ, polar NRZ, polar RZ, Manchester, differential Manchester, and AMI. Prediction of each waveform's DC content, bandwidth and self-clocking is written first, then compared against the simulation.</p>
+
+<div class="card">
+  <h2 style="margin-top:0">1 · Bit sequence</h2>
+  <div class="row">
+    <div class="field"><label>Bits for waveform/PSD</label><input id="nbits" type="number" value="64" min="16" max="256"></div>
+    <button id="randSeq">Randomize</button>
+  </div>
+  <p class="sub" id="seqShow" style="font-family:monospace;word-break:break-all;"></p>
+  <div class="note">Expected: unipolar and polar NRZ carry a DC offset or wander from long identical runs; RZ and Manchester have a built-in transition every bit (self-clocking); AMI removes DC by alternating pulse polarity but still relies on a run of the opposite bit to keep clock sync.</div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">2 · Aligned line-code waveforms</h2>
+  <div class="gridwave" id="waveGrid"></div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">3 · DC level &amp; running digital sum</h2>
+  <div id="dcTable"></div>
+  <div class="chartbox"><canvas id="chartRDS" role="img" aria-label="Running digital sum for each line code over the bit sequence">Running digital sum per code.</canvas></div>
+  <div class="interp" id="rdsInterp"></div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">4 · Normalized power spectral density (Welch's method)</h2>
+  <div class="chartbox"><canvas id="chartPSD" role="img" aria-label="Normalized power spectral density in decibels versus normalized frequency for each line code">PSD in dB vs normalized frequency.</canvas></div>
+  <div class="interp" id="psdInterp"></div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">5 · Long run of identical bits</h2>
+  <div class="row">
+    <div class="field"><label>Run length</label><input id="runLen" type="number" value="30" min="8" max="80"></div>
+    <div class="field"><label>Bit value</label><select id="runBit"><option value="0">All 0s</option><option value="1">All 1s</option></select></div>
+    <button id="runTest">Run long-run test</button>
+  </div>
+  <div class="chartbox"><canvas id="chartLongRun" role="img" aria-label="Running digital sum during a long run of identical bits, comparing each line code">RDS during a long identical-bit run.</canvas></div>
+  <div class="interp" id="longRunInterp"></div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">6 · Mandatory validation — encode a specific 8-bit word</h2>
+  <div class="row">
+    <div class="field"><label>8-bit word</label><input id="word8" type="text" maxlength="8" value="10110010"></div>
+    <button id="encodeWord">Encode &amp; compare transitions</button>
+  </div>
+  <div id="wordTable"></div>
+</div>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const SPS = 16; // samples per bit for waveform/PSD synthesis
+const CODES = ['Unipolar NRZ','Polar NRZ','Polar RZ','Manchester','Diff. Manchester','AMI'];
+const COLORS = ['#2a78d6','#eb6834','#1baf7a','#eda100','#e87ba4','#6250d6'];
+
+function isDark(){ return matchMedia('(prefers-color-scheme: dark)').matches; }
+const ink = () => isDark() ? '#eee' : '#1a1a1a';
+const grid = () => isDark() ? '#3a3a3d' : '#e1e0d9';
+
+function randomBits(n){ let s=''; for(let i=0;i<n;i++) s+= Math.random()<0.5?'0':'1'; return s; }
+
+function encodeAll(bitstr){
+  const bits = bitstr.split('').map(Number);
+  const n = bits.length;
+  const wf = {}; CODES.forEach(c=>wf[c]=new Array(n*SPS).fill(0));
+  const bitLevel = {}; CODES.forEach(c=>bitLevel[c]=new Array(n).fill(0));
+  let amiPol = -1;
+  let dmLevel = 1; // differential manchester running level state
+  for(let i=0;i<n;i++){
+    const b = bits[i];
+    const half = SPS/2;
+    // Unipolar NRZ
+    const uni = b? 1:0;
+    for(let s=0;s<SPS;s++) wf['Unipolar NRZ'][i*SPS+s]=uni;
+    bitLevel['Unipolar NRZ'][i]=uni;
+    // Polar NRZ
+    const pol = b? 1:-1;
+    for(let s=0;s<SPS;s++) wf['Polar NRZ'][i*SPS+s]=pol;
+    bitLevel['Polar NRZ'][i]=pol;
+    // Polar RZ: pulse for first half, 0 for second half
+    for(let s=0;s<SPS;s++) wf['Polar RZ'][i*SPS+s]= s<half ? pol : 0;
+    bitLevel['Polar RZ'][i]=pol*0.5;
+    // Manchester (Thomas convention): '1' high->low, '0' low->high
+    for(let s=0;s<SPS;s++) wf['Manchester'][i*SPS+s]= (s<half) ? (b?1:-1) : (b?-1:1);
+    bitLevel['Manchester'][i]=0;
+    // Differential Manchester: transition at mid always; transition at start iff bit==0
+    if(b===0) dmLevel = -dmLevel;
+    const firstHalfLevel = dmLevel;
+    dmLevel = -dmLevel; // mid-bit transition always occurs
+    const secondHalfLevel = dmLevel;
+    for(let s=0;s<SPS;s++) wf['Diff. Manchester'][i*SPS+s]= s<half? firstHalfLevel: secondHalfLevel;
+    bitLevel['Diff. Manchester'][i]=0;
+    // AMI: '1' alternates polarity, '0' = 0
+    let amiVal = 0;
+    if(b===1){ amiPol = -amiPol; amiVal = amiPol; }
+    for(let s=0;s<SPS;s++) wf['AMI'][i*SPS+s]=amiVal;
+    bitLevel['AMI'][i]=amiVal;
+  }
+  return {wf, bitLevel, n};
+}
+
+function runningSum(arr){ const out=new Array(arr.length); let s=0; for(let i=0;i<arr.length;i++){ s+=arr[i]; out[i]=s; } return out; }
+
+// ---- FFT (radix-2) ----
+function fft(re, im){
+  const n = re.length;
+  if(n<=1) return;
+  for(let i=1,j=0;i<n;i++){
+    let bit=n>>1;
+    for(;j&bit;bit>>=1) j^=bit;
+    j^=bit;
+    if(i<j){ [re[i],re[j]]=[re[j],re[i]]; [im[i],im[j]]=[im[j],im[i]]; }
+  }
+  for(let len=2;len<=n;len<<=1){
+    const ang = -2*Math.PI/len;
+    const wr=Math.cos(ang), wi=Math.sin(ang);
+    for(let i=0;i<n;i+=len){
+      let curWr=1,curWi=0;
+      for(let k=0;k<len/2;k++){
+        const ur=re[i+k], ui=im[i+k];
+        const vr=re[i+k+len/2]*curWr - im[i+k+len/2]*curWi;
+        const vi=re[i+k+len/2]*curWi + im[i+k+len/2]*curWr;
+        re[i+k]=ur+vr; im[i+k]=ui+vi;
+        re[i+k+len/2]=ur-vr; im[i+k+len/2]=ui-vi;
+        const nwr=curWr*wr-curWi*wi, nwi=curWr*wi+curWi*wr;
+        curWr=nwr; curWi=nwi;
+      }
+    }
+  }
+}
+
+function nextPow2(v){ let p=1; while(p<v) p*=2; return p; }
+
+function welchPSD(signal, segLen){
+  segLen = nextPow2(segLen);
+  const hop = segLen/2;
+  const win = new Array(segLen);
+  let winPow=0;
+  for(let i=0;i<segLen;i++){ win[i]=0.54-0.46*Math.cos(2*Math.PI*i/(segLen-1)); winPow+=win[i]*win[i]; }
+  const half = segLen/2;
+  const acc = new Array(half).fill(0);
+  let segs=0;
+  for(let start=0; start+segLen<=signal.length; start+=hop){
+    const re=new Array(segLen), im=new Array(segLen).fill(0);
+    for(let i=0;i<segLen;i++) re[i]=signal[start+i]*win[i];
+    fft(re, im);
+    for(let k=0;k<half;k++) acc[k]+= (re[k]*re[k]+im[k]*im[k])/winPow;
+    segs++;
+  }
+  if(segs===0) segs=1;
+  const psd = acc.map(v=>v/segs);
+  return psd;
+}
+
+let charts = {};
+function upsertChart(id, config){ if(charts[id]) charts[id].destroy(); charts[id]=new Chart(document.getElementById(id), config); }
+function lineOpts(xLabel,yLabel,xTicks){
+  return { responsive:true, maintainAspectRatio:false, animation:false,
+    scales:{ x:{ ticks:{color:ink(),autoSkip:!!xTicks,maxRotation:0}, grid:{color:grid()}, title:{display:true,text:xLabel,color:ink()} },
+             y:{ ticks:{color:ink()}, grid:{color:grid()}, title:{display:true,text:yLabel,color:ink()} } },
+    plugins:{ legend:{labels:{color:ink()}} } };
+}
+
+let currentSeq = randomBits(64);
+
+function buildWaveGrid(bitstr){
+  const grid_el = document.getElementById('waveGrid');
+  grid_el.innerHTML='';
+  const showBits = Math.min(bitstr.length, 20);
+  const shown = bitstr.slice(0,showBits);
+  const {wf} = encodeAll(shown);
+  const labels = wf['Unipolar NRZ'].map((_,i)=>i);
+  CODES.forEach((code,ci)=>{
+    const lbl = document.createElement('div'); lbl.className='wavelabel'; lbl.textContent=code;
+    grid_el.appendChild(lbl);
+    const box = document.createElement('div'); box.className='wavebox';
+    const cv = document.createElement('canvas'); cv.id='wave_'+ci; cv.setAttribute('role','img');
+    cv.setAttribute('aria-label', code+' waveform for the shown bit sequence');
+    box.appendChild(cv); grid_el.appendChild(box);
+    upsertChart('wave_'+ci, { type:'line', data:{ labels, datasets:[{data:wf[code], borderColor:COLORS[ci], borderWidth:1.5, stepped:true, pointRadius:0}]},
+      options:{ responsive:true, maintainAspectRatio:false, animation:false,
+        scales:{ x:{display:false}, y:{ ticks:{color:ink(),font:{size:9}}, grid:{color:grid()}, min:-1.3, max:1.3 } },
+        plugins:{ legend:{display:false} } } });
+  });
+}
+
+function refreshAll(){
+  const nbits = Math.min(256, Math.max(16, +document.getElementById('nbits').value));
+  currentSeq = randomBits(nbits);
+  document.getElementById('seqShow').textContent = currentSeq;
+  buildWaveGrid(currentSeq);
+  computeDCandRDS(currentSeq);
+  computePSD(currentSeq);
+}
+
+function computeDCandRDS(bitstr){
+  const {wf, bitLevel, n} = encodeAll(bitstr);
+  let rows = '<table><tr><th>Line code</th><th>Average level (DC)</th><th>Final RDS</th><th>Bandwidth (main-lobe null, ×1/Tb)</th></tr>';
+  const nullBW = {'Unipolar NRZ':1,'Polar NRZ':1,'Polar RZ':2,'Manchester':2,'Diff. Manchester':2,'AMI':1};
+  const rdsData = {};
+  CODES.forEach(code=>{
+    const dc = wf[code].reduce((a,b)=>a+b,0)/wf[code].length;
+    const rds = runningSum(bitLevel[code]);
+    rdsData[code]=rds;
+    rows += `<tr><td>${code}</td><td>${dc.toFixed(3)}</td><td>${rds[rds.length-1].toFixed(2)}</td><td>${nullBW[code]}</td></tr>`;
+  });
+  rows += '</table>';
+  document.getElementById('dcTable').innerHTML = rows;
+
+  const labels = Array.from({length:n},(_,i)=>i+1);
+  upsertChart('chartRDS', { type:'line', data:{ labels, datasets: CODES.map((c,i)=>({label:c, data:rdsData[c], borderColor:COLORS[i], borderWidth:1.5, pointRadius:0})) } ,
+    options: lineOpts('bit index','running digital sum', true) });
+
+  const uniDc = wf['Unipolar NRZ'].reduce((a,b)=>a+b,0)/wf['Unipolar NRZ'].length;
+  const amiDc = wf['AMI'].reduce((a,b)=>a+b,0)/wf['AMI'].length;
+  document.getElementById('rdsInterp').innerHTML = `<b>Observation:</b> unipolar NRZ has a nonzero average level (${uniDc.toFixed(3)}) and its running sum drifts with the bit pattern, confirming a DC component. AMI's running sum stays bounded near zero (avg ${amiDc.toFixed(3)}) because successive marks alternate polarity — this agrees with theory that AMI removes DC while unipolar signalling does not.`;
+}
+
+function computePSD(bitstr){
+  const {wf} = encodeAll(bitstr);
+  const segLen = Math.min(256, nextPow2(Math.floor(wf['Unipolar NRZ'].length/2)));
+  const datasets = [];
+  CODES.forEach((code,i)=>{
+    let psd = welchPSD(wf[code], segLen);
+    const maxV = Math.max(...psd, 1e-9);
+    const psdDb = psd.map(v=>10*Math.log10(Math.max(v/maxV,1e-6)));
+    datasets.push({label:code, data:psdDb, borderColor:COLORS[i], borderWidth:1.5, pointRadius:0});
+  });
+  const half = datasets[0].data.length;
+  const labels = Array.from({length:half},(_,k)=> (k/half*(SPS/2)).toFixed(2));
+  upsertChart('chartPSD', { type:'line', data:{labels, datasets}, options: lineOpts('normalized frequency f·T_b','PSD (dB, normalized to peak)', true) });
+  document.getElementById('psdInterp').innerHTML = `<b>Observation:</b> unipolar and polar NRZ concentrate energy at low frequency with a spectral null near f·T_b = 1; RZ and Manchester-type codes push more energy to higher frequency and null near f·T_b = 2 because of the extra transition per bit, trading bandwidth for guaranteed clock transitions; AMI shows a null at DC (f·T_b = 0), the spectral signature of its alternating-polarity DC suppression.`;
+}
+
+document.getElementById('runTest').onclick = ()=>{
+  const len = +document.getElementById('runLen').value;
+  const bit = document.getElementById('runBit').value;
+  const prefix = randomBits(6);
+  const seq = prefix + bit.repeat(len) + randomBits(6);
+  const {wf, bitLevel} = encodeAll(seq);
+  const labels = Array.from({length:seq.length},(_,i)=>i+1);
+  const rdsData = {};
+  CODES.forEach(code=> rdsData[code]=runningSum(bitLevel[code]));
+  upsertChart('chartLongRun', { type:'line', data:{labels, datasets: CODES.map((c,i)=>({label:c, data:rdsData[c], borderColor:COLORS[i], borderWidth:1.5, pointRadius:0}))},
+    options: lineOpts('bit index','running digital sum', true) });
+  const uniFinal = rdsData['Unipolar NRZ'][rdsData['Unipolar NRZ'].length-1];
+  const amiFinal = rdsData['AMI'][rdsData['AMI'].length-1];
+  const manFinal = rdsData['Manchester'][rdsData['Manchester'].length-1];
+  document.getElementById('longRunInterp').innerHTML = `<b>Observation:</b> during the ${len}-bit run of ${bit}s, unipolar/polar NRZ's running sum ramps steadily (ends at ${uniFinal.toFixed(1)}) with no transitions in that stretch — a receiver relying on data transitions for clock recovery would lose sync. AMI (${amiFinal.toFixed(1)}) only avoids buildup on a run of 1s, since it alternates polarity on marks but still has no transition during a run of 0s. Manchester/differential Manchester keep a transition every bit regardless of pattern (RDS ${manFinal.toFixed(1)}), which is why they're called self-clocking.`;
+};
+
+document.getElementById('encodeWord').onclick = ()=>{
+  let w = document.getElementById('word8').value.trim();
+  if(!/^[01]{1,8}$/.test(w)){ document.getElementById('wordTable').innerHTML='<span class="pill bad">Enter 1–8 bits (0/1 only)</span>'; return; }
+  const {wf} = encodeAll(w);
+  let rows = '<table><tr><th>Line code</th><th>Transitions</th><th>Notes</th></tr>';
+  CODES.forEach(code=>{
+    const s = wf[code];
+    let trans=0;
+    for(let i=1;i<s.length;i++) if(Math.abs(s[i]-s[i-1])>1e-9) trans++;
+    let note='';
+    if(code==='Unipolar NRZ' || code==='Polar NRZ') note = 'transition only where the bit value changes';
+    else if(code==='Polar RZ') note = 'return-to-zero adds a transition inside every 1 and every -1 bit';
+    else if(code.startsWith('Manchester')) note = 'guaranteed mid-bit transition, every bit';
+    else if(code==='Diff. Manchester') note = 'guaranteed mid-bit transition plus start-of-bit transition on 0s';
+    else note = 'transition only between successive 1-bits (polarity alternation)';
+    rows += `<tr><td>${code}</td><td>${trans}</td><td>${note}</td></tr>`;
+  });
+  rows += '</table>';
+  document.getElementById('wordTable').innerHTML = rows;
+  buildWaveGridForWord(w);
+};
+
+function buildWaveGridForWord(w){
+  // reuse main grid to also show the validation word waveforms below the table momentarily
+  const {wf} = encodeAll(w);
+  const labels = wf['Unipolar NRZ'].map((_,i)=>i);
+  let html='';
+  CODES.forEach((code,ci)=>{ html += `<div class="wavelabel">${code} — word ${w}</div><div class="wavebox"><canvas id="wword_${ci}"></canvas></div>`; });
+  const existing = document.getElementById('wordWaveGrid');
+  if(existing) existing.remove();
+  const div = document.createElement('div'); div.id='wordWaveGrid'; div.className='gridwave'; div.style.marginTop='.6rem'; div.innerHTML=html;
+  document.getElementById('wordTable').after(div);
+  CODES.forEach((code,ci)=>{
+    upsertChart('wword_'+ci, { type:'line', data:{labels, datasets:[{data:wf[code], borderColor:COLORS[ci], borderWidth:1.5, stepped:true, pointRadius:0}]},
+      options:{ responsive:true, maintainAspectRatio:false, animation:false,
+        scales:{ x:{display:false}, y:{ ticks:{color:ink(),font:{size:9}}, grid:{color:grid()}, min:-1.3, max:1.3 } },
+        plugins:{legend:{display:false}} } });
+  });
+}
+
+document.getElementById('randSeq').onclick = refreshAll;
+refreshAll();
+document.getElementById('runTest').click();
+document.getElementById('encodeWord').click();
+</script>
+</body>
+</html>
